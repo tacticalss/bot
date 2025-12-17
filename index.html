@@ -24,8 +24,126 @@
         import { 
             Save, Upload, Download, Plus, Trash2, 
             Smartphone, Zap, Image as ImageIcon, MessageSquare,
-            ArrowRight, GripVertical, ExternalLink, RefreshCw, LayoutGrid 
+            ArrowRight, GripVertical, ExternalLink, RefreshCw, LayoutGrid, X
         } from 'https://esm.sh/lucide-react@0.263.1';
+
+        // --- EXTRACTED COMPONENT TO FIX FOCUS BUG ---
+        const ButtonEditor = ({ buttons, nodeList, onChange }) => {
+            const updateButton = (rowIndex, btnIndex, field, val) => {
+                const newButtons = [...buttons];
+                // Ensure the row exists
+                if (!newButtons[rowIndex]) newButtons[rowIndex] = [];
+                // Ensure the button object exists
+                if (!newButtons[rowIndex][btnIndex]) newButtons[rowIndex][btnIndex] = {};
+                
+                newButtons[rowIndex][btnIndex] = { ...newButtons[rowIndex][btnIndex], [field]: val };
+                
+                if (field === 'type') {
+                    if (val === 'url') {
+                        delete newButtons[rowIndex][btnIndex].next;
+                        newButtons[rowIndex][btnIndex].url = "https://";
+                    } else {
+                        delete newButtons[rowIndex][btnIndex].url;
+                        newButtons[rowIndex][btnIndex].next = Object.keys(nodeList)[0] || "";
+                    }
+                }
+                onChange(newButtons);
+            };
+
+            const addButton = (rowIndex) => {
+                const newButtons = [...buttons];
+                newButtons[rowIndex].push({ label: "New Button", next: Object.keys(nodeList)[0] || "" });
+                onChange(newButtons);
+            };
+
+            const addRow = () => {
+                const newButtons = [...buttons, [{ label: "New Button", next: Object.keys(nodeList)[0] || "" }]];
+                onChange(newButtons);
+            };
+
+            const removeButton = (rowIndex, btnIndex) => {
+                const newButtons = [...buttons];
+                newButtons[rowIndex].splice(btnIndex, 1);
+                if (newButtons[rowIndex].length === 0) {
+                    newButtons.splice(rowIndex, 1);
+                }
+                onChange(newButtons);
+            };
+
+            const removeRow = (rowIndex) => {
+                const newButtons = [...buttons];
+                newButtons.splice(rowIndex, 1);
+                onChange(newButtons);
+            }
+
+            return (
+                <div className="space-y-4">
+                    {buttons.map((row, rIndex) => (
+                        <div key={rIndex} className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                            <div className="text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider flex justify-between items-center">
+                                Row {rIndex + 1}
+                                <button onClick={() => removeRow(rIndex)} className="text-red-400 hover:text-red-600 p-1">
+                                    <Trash2 size={12} />
+                                </button>
+                            </div>
+                            <div className="space-y-3">
+                                {row.map((btn, bIndex) => (
+                                    <div key={bIndex} className="flex flex-col gap-2 bg-white p-3 rounded border border-slate-200 shadow-sm">
+                                        <div className="flex items-center gap-2">
+                                            <input 
+                                                type="text" 
+                                                value={btn.label || ""} 
+                                                onChange={(e) => updateButton(rIndex, bIndex, 'label', e.target.value)}
+                                                className="flex-1 text-sm border border-slate-200 rounded px-2 py-1"
+                                                placeholder="Button Label"
+                                            />
+                                            <button onClick={() => removeButton(rIndex, bIndex)} className="text-slate-400 hover:text-red-500 p-1">
+                                                <X size={14} />
+                                            </button>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <select 
+                                                className="text-xs border border-slate-200 rounded px-2 py-1 bg-slate-50"
+                                                value={btn.url !== undefined ? 'url' : 'next'}
+                                                onChange={(e) => updateButton(rIndex, bIndex, 'type', e.target.value)}
+                                            >
+                                                <option value="next">Go to Node</option>
+                                                <option value="url">Open URL</option>
+                                            </select>
+                                            {btn.url !== undefined ? (
+                                                <input 
+                                                    type="text" 
+                                                    value={btn.url}
+                                                    onChange={(e) => updateButton(rIndex, bIndex, 'url', e.target.value)}
+                                                    className="flex-1 text-xs border border-slate-200 rounded px-2 py-1"
+                                                    placeholder="https://..."
+                                                />
+                                            ) : (
+                                                <select 
+                                                    value={btn.next || ""} 
+                                                    onChange={(e) => updateButton(rIndex, bIndex, 'next', e.target.value)}
+                                                    className="flex-1 text-xs border border-slate-200 rounded px-2 py-1"
+                                                >
+                                                    {Object.entries(nodeList).map(([id, n]) => (
+                                                        <option key={id} value={id}>{n.name} ({id})</option>
+                                                    ))}
+                                                </select>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
+                                <button onClick={() => addButton(rIndex)} className="w-full py-1 text-xs text-blue-500 font-medium hover:bg-blue-50 rounded border border-dashed border-blue-200">
+                                    + Add Button to Row
+                                </button>
+                            </div>
+                        </div>
+                    ))}
+                    <button onClick={addRow} className="w-full py-2 text-sm text-slate-500 font-medium hover:bg-slate-100 rounded border border-dashed border-slate-300 flex items-center justify-center gap-2">
+                        <Plus size={16} /> Add New Row
+                    </button>
+                </div>
+            );
+        };
 
         const ConfigBuilder = () => {
             // --- INITIAL STATE ---
@@ -75,7 +193,44 @@
             const [previewNodeId, setPreviewNodeId] = useState("home_screen");
             const [activeTab, setActiveTab] = useState("editor");
 
-            // --- ACTIONS ---
+            // --- COMMAND ACTIONS ---
+            const addCommand = () => {
+                const newCmd = `cmd_${Object.keys(config.commands).length + 1}`;
+                const firstNode = Object.keys(config.nodes)[0];
+                setConfig(prev => ({
+                    ...prev,
+                    commands: { ...prev.commands, [newCmd]: firstNode }
+                }));
+            };
+
+            const updateCommandKey = (oldKey, newKey) => {
+                if (oldKey === newKey) return;
+                const newCommands = {};
+                // Reconstruct object to maintain order (roughly)
+                Object.entries(config.commands).forEach(([k, v]) => {
+                    if (k === oldKey) {
+                        newCommands[newKey] = v;
+                    } else {
+                        newCommands[k] = v;
+                    }
+                });
+                setConfig(prev => ({ ...prev, commands: newCommands }));
+            };
+
+            const updateCommandTarget = (key, newTarget) => {
+                setConfig(prev => ({
+                    ...prev,
+                    commands: { ...prev.commands, [key]: newTarget }
+                }));
+            };
+
+            const deleteCommand = (key) => {
+                const newCommands = { ...config.commands };
+                delete newCommands[key];
+                setConfig(prev => ({ ...prev, commands: newCommands }));
+            };
+
+            // --- NODE ACTIONS ---
             const handleImport = (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
@@ -163,118 +318,8 @@
                 }));
             };
 
-            // --- BUTTON EDITOR COMPONENT ---
-            const ButtonEditor = () => {
-                const node = config.nodes[selectedNodeId];
-                if (!node) return null;
-                const buttons = node.buttons || [];
-
-                const updateButton = (rowIndex, btnIndex, field, val) => {
-                    const newButtons = [...buttons];
-                    newButtons[rowIndex][btnIndex] = { ...newButtons[rowIndex][btnIndex], [field]: val };
-                    if (field === 'type') {
-                        if (val === 'url') {
-                            delete newButtons[rowIndex][btnIndex].next;
-                            newButtons[rowIndex][btnIndex].url = "https://";
-                        } else {
-                            delete newButtons[rowIndex][btnIndex].url;
-                            newButtons[rowIndex][btnIndex].next = selectedNodeId;
-                        }
-                    }
-                    updateNode('buttons', newButtons);
-                };
-
-                const addButton = (rowIndex) => {
-                    const newButtons = [...buttons];
-                    newButtons[rowIndex].push({ label: "New Button", next: selectedNodeId });
-                    updateNode('buttons', newButtons);
-                };
-
-                const addRow = () => {
-                    const newButtons = [...buttons, [{ label: "New Button", next: selectedNodeId }]];
-                    updateNode('buttons', newButtons);
-                };
-
-                const removeButton = (rowIndex, btnIndex) => {
-                    const newButtons = [...buttons];
-                    newButtons[rowIndex].splice(btnIndex, 1);
-                    if (newButtons[rowIndex].length === 0) {
-                        newButtons.splice(rowIndex, 1);
-                    }
-                    updateNode('buttons', newButtons);
-                };
-
-                return (
-                    <div className="space-y-4">
-                        {buttons.map((row, rIndex) => (
-                            <div key={rIndex} className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                                <div className="text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider flex justify-between items-center">
-                                    Row {rIndex + 1}
-                                    <button onClick={() => {
-                                        const newButtons = [...buttons];
-                                        newButtons.splice(rIndex, 1);
-                                        updateNode('buttons', newButtons);
-                                    }} className="text-red-400 hover:text-red-600">
-                                        <Trash2 size={12} />
-                                    </button>
-                                </div>
-                                <div className="space-y-3">
-                                    {row.map((btn, bIndex) => (
-                                        <div key={bIndex} className="flex flex-col gap-2 bg-white p-3 rounded border border-slate-200 shadow-sm">
-                                            <div className="flex items-center gap-2">
-                                                <input 
-                                                    type="text" 
-                                                    value={btn.label} 
-                                                    onChange={(e) => updateButton(rIndex, bIndex, 'label', e.target.value)}
-                                                    className="flex-1 text-sm border-slate-200 rounded px-2 py-1"
-                                                    placeholder="Button Label"
-                                                />
-                                                <button onClick={() => removeButton(rIndex, bIndex)} className="text-slate-400 hover:text-red-500">
-                                                    <Trash2 size={14} />
-                                                </button>
-                                            </div>
-                                            <div className="flex gap-2">
-                                                <select 
-                                                    className="text-xs border border-slate-200 rounded px-2 py-1 bg-slate-50"
-                                                    value={btn.url ? 'url' : 'next'}
-                                                    onChange={(e) => updateButton(rIndex, bIndex, 'type', e.target.value)}
-                                                >
-                                                    <option value="next">Go to Node</option>
-                                                    <option value="url">Open URL</option>
-                                                </select>
-                                                {btn.url !== undefined ? (
-                                                    <input 
-                                                        type="text" 
-                                                        value={btn.url}
-                                                        onChange={(e) => updateButton(rIndex, bIndex, 'url', e.target.value)}
-                                                        className="flex-1 text-xs border-slate-200 rounded px-2 py-1"
-                                                        placeholder="https://..."
-                                                    />
-                                                ) : (
-                                                    <select 
-                                                        value={btn.next || ""} 
-                                                        onChange={(e) => updateButton(rIndex, bIndex, 'next', e.target.value)}
-                                                        className="flex-1 text-xs border-slate-200 rounded px-2 py-1"
-                                                    >
-                                                        {Object.entries(config.nodes).map(([id, n]) => (
-                                                            <option key={id} value={id}>{n.name} ({id})</option>
-                                                        ))}
-                                                    </select>
-                                                )}
-                                            </div>
-                                        </div>
-                                    ))}
-                                    <button onClick={() => addButton(rIndex)} className="w-full py-1 text-xs text-blue-500 font-medium hover:bg-blue-50 rounded border border-dashed border-blue-200">
-                                        + Add Button to Row
-                                    </button>
-                                </div>
-                            </div>
-                        ))}
-                        <button onClick={addRow} className="w-full py-2 text-sm text-slate-500 font-medium hover:bg-slate-100 rounded border border-dashed border-slate-300 flex items-center justify-center gap-2">
-                            <Plus size={16} /> Add New Row
-                        </button>
-                    </div>
-                );
+            const updateNodeButtons = (newButtons) => {
+                updateNode('buttons', newButtons);
             };
 
             // --- MAIN RENDER ---
@@ -293,29 +338,55 @@
                         </div>
                         <div className="flex items-center gap-3">
                             <label className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-md border border-slate-200 cursor-pointer transition-colors">
-                                <Upload size={16} /> Import JSON
+                                <Upload size={16} /> Import
                                 <input type="file" accept=".json" onChange={handleImport} className="hidden" />
                             </label>
                             <button onClick={handleExport} className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-md border border-slate-200 transition-colors">
-                                <Download size={16} /> Export JSON
+                                <Download size={16} /> Export
                             </button>
                             <button onClick={copyToClipboard} className="flex items-center gap-2 px-4 py-1.5 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-md shadow-sm transition-colors">
-                                <Save size={16} /> Copy for Bot
+                                <Save size={16} /> Copy
                             </button>
                         </div>
                     </header>
 
                     <div className="flex-1 flex overflow-hidden">
                         {/* LEFT SIDEBAR: LISTS */}
-                        <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0">
+                        <aside className="w-80 bg-white border-r border-slate-200 flex flex-col shrink-0">
                             <div className="p-4 border-b border-slate-100">
-                                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Commands</h3>
+                                <div className="flex items-center justify-between mb-3">
+                                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Commands</h3>
+                                    <button onClick={addCommand} className="p-1 hover:bg-slate-100 rounded text-blue-600 transition-colors" title="Add Command">
+                                        <Plus size={16} />
+                                    </button>
+                                </div>
                                 <div className="space-y-2">
-                                    {Object.entries(config.commands).map(([cmd, target]) => (
-                                        <div key={cmd} className="flex items-center justify-between bg-slate-50 p-2 rounded text-sm border border-slate-100">
-                                            <span className="font-mono text-blue-600">/{cmd}</span>
-                                            <ArrowRight size={12} className="text-slate-300" />
-                                            <span className="text-xs text-slate-500 truncate max-w-[80px]">{config.nodes[target]?.name || target}</span>
+                                    {Object.entries(config.commands).map(([cmd, target], idx) => (
+                                        <div key={idx} className="flex flex-col bg-slate-50 p-2 rounded border border-slate-100 gap-2 group">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-slate-400 text-xs font-mono">/</span>
+                                                <input 
+                                                    type="text" 
+                                                    className="flex-1 bg-transparent border-none text-sm font-mono text-blue-700 focus:ring-0 p-0"
+                                                    value={cmd}
+                                                    onChange={(e) => updateCommandKey(cmd, e.target.value)}
+                                                />
+                                                <button onClick={() => deleteCommand(cmd)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 transition-opacity">
+                                                    <Trash2 size={12} />
+                                                </button>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <ArrowRight size={12} className="text-slate-300" />
+                                                <select 
+                                                    value={target}
+                                                    onChange={(e) => updateCommandTarget(cmd, e.target.value)}
+                                                    className="flex-1 text-xs bg-white border border-slate-200 rounded px-1 py-1"
+                                                >
+                                                    {Object.entries(config.nodes).map(([id, node]) => (
+                                                        <option key={id} value={id}>{node.name}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
                                         </div>
                                     ))}
                                 </div>
@@ -323,7 +394,7 @@
                             <div className="flex-1 overflow-y-auto p-4">
                                 <div className="flex items-center justify-between mb-3">
                                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Nodes (Screens)</h3>
-                                    <button onClick={addNode} className="p-1 hover:bg-slate-100 rounded text-blue-600 transition-colors">
+                                    <button onClick={addNode} className="p-1 hover:bg-slate-100 rounded text-blue-600 transition-colors" title="Add Screen">
                                         <Plus size={16} />
                                     </button>
                                 </div>
@@ -407,7 +478,11 @@
                                         </div>
                                         <div>
                                             <label className="block text-xs font-bold text-slate-500 uppercase mb-3 flex items-center gap-2"><LayoutGrid size={14} /> Buttons & Actions</label>
-                                            <ButtonEditor />
+                                            <ButtonEditor 
+                                                buttons={currentNode.buttons || []}
+                                                nodeList={config.nodes}
+                                                onChange={updateNodeButtons}
+                                            />
                                         </div>
                                     </div>
                                 ) : activeTab === 'json' ? (
