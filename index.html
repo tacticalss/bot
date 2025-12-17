@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Telegram Bot Builder</title>
+    <title>Telegram Bot Builder + AI</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
@@ -12,6 +12,13 @@
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .glass-panel { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(4px); }
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(59, 130, 246, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+        }
+        .animate-pulse-ring { animation: pulse-ring 2s infinite; }
     </style>
 </head>
 <body class="bg-slate-100">
@@ -24,18 +31,50 @@
         import { 
             Save, Upload, Download, Plus, Trash2, 
             Smartphone, Zap, Image as ImageIcon, MessageSquare,
-            ArrowRight, GripVertical, ExternalLink, RefreshCw, LayoutGrid, X, AlertCircle
+            ArrowRight, GripVertical, ExternalLink, RefreshCw, LayoutGrid, X, AlertCircle,
+            Sparkles, Settings, Loader2, Wand2
         } from 'https://esm.sh/lucide-react@0.263.1';
+
+        // --- GEMINI API HELPER ---
+        const generateContent = async (apiKey, prompt, systemInstruction = "") => {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                    responseMimeType: "application/json"
+                }
+            };
+
+            if (systemInstruction) {
+                payload.systemInstruction = { parts: [{ text: systemInstruction }] };
+            }
+
+            try {
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error?.message || "API Error");
+                }
+
+                const data = await response.json();
+                return JSON.parse(data.candidates[0].content.parts[0].text);
+            } catch (error) {
+                console.error("Gemini API Error:", error);
+                throw error;
+            }
+        };
 
         // --- EXTRACTED COMPONENT TO FIX FOCUS BUG & IMMUTABILITY ---
         const ButtonEditor = ({ buttons, nodeList, onChange }) => {
             const updateButton = (rowIndex, btnIndex, field, val) => {
-                // Deep copy to prevent state mutation issues
                 const newButtons = buttons.map(row => [...row]);
-                
-                // Ensure the row exists
                 if (!newButtons[rowIndex]) newButtons[rowIndex] = [];
-                // Ensure the button object exists
                 if (!newButtons[rowIndex][btnIndex]) newButtons[rowIndex][btnIndex] = {};
                 
                 newButtons[rowIndex][btnIndex] = { ...newButtons[rowIndex][btnIndex], [field]: val };
@@ -199,13 +238,85 @@
             const [jsonText, setJsonText] = useState(JSON.stringify(initialConfig, null, 2));
             const [jsonError, setJsonError] = useState(null);
 
-            // Sync JSON text when config changes (only if not in JSON mode)
+            // AI State
+            const [apiKey, setApiKey] = useState(localStorage.getItem("gemini_api_key") || "");
+            const [showSettings, setShowSettings] = useState(false);
+            const [isGeneratingNode, setIsGeneratingNode] = useState(false);
+            const [isPolishing, setIsPolishing] = useState(false);
+            const [showAiModal, setShowAiModal] = useState(false);
+            const [aiPrompt, setAiPrompt] = useState("");
+
             useEffect(() => {
                 if (activeTab !== 'json') {
                     setJsonText(JSON.stringify(config, null, 2));
                     setJsonError(null);
                 }
             }, [config, activeTab]);
+
+            // --- AI ACTIONS ---
+            const saveApiKey = (key) => {
+                setApiKey(key);
+                localStorage.setItem("gemini_api_key", key);
+            };
+
+            const handleGenerateNode = async () => {
+                if (!apiKey) { setShowSettings(true); return; }
+                if (!aiPrompt.trim()) return;
+
+                setIsGeneratingNode(true);
+                try {
+                    const systemPrompt = `You are a helper for a Telegram Bot Builder. 
+                    Create a JSON object representing a SINGLE bot node based on the user's description.
+                    The JSON must adhere to this schema:
+                    {
+                        "name": "string (internal descriptive name)",
+                        "type": "text" OR "image",
+                        "text": "string (HTML allowed, use <b>, <i>, emojis)",
+                        "media_url": "string (optional, valid image URL if type is image)",
+                        "buttons": [[{"label": "string", "next": "string (target node ID placeholder)"}]]
+                    }
+                    For 'next' in buttons, use 'home_screen' or 'placeholder' if unsure.
+                    Return ONLY the JSON object.`;
+
+                    const nodeData = await generateContent(apiKey, aiPrompt, systemPrompt);
+                    
+                    const id = `node_${Date.now()}`;
+                    setConfig(prev => ({
+                        ...prev,
+                        nodes: { ...prev.nodes, [id]: nodeData }
+                    }));
+                    setSelectedNodeId(id);
+                    setPreviewNodeId(id);
+                    setShowAiModal(false);
+                    setAiPrompt("");
+                } catch (error) {
+                    alert("AI Generation Failed: " + error.message);
+                } finally {
+                    setIsGeneratingNode(false);
+                }
+            };
+
+            const handlePolishText = async () => {
+                if (!apiKey) { setShowSettings(true); return; }
+                const currentNode = config.nodes[selectedNodeId];
+                if (!currentNode.text) return;
+
+                setIsPolishing(true);
+                try {
+                    const systemPrompt = `You are a professional copywriter for Telegram bots.
+                    Rewrite the provided text to be engaging, concise, and user-friendly.
+                    Use proper HTML tags (<b>, <i>) for formatting.
+                    Add relevant emojis.
+                    Return JSON: { "text": "your polished text here" }`;
+
+                    const result = await generateContent(apiKey, currentNode.text, systemPrompt);
+                    updateNode('text', result.text);
+                } catch (error) {
+                    alert("AI Polish Failed: " + error.message);
+                } finally {
+                    setIsPolishing(false);
+                }
+            };
 
             // --- JSON EDITOR ACTIONS ---
             const handleJsonChange = (e) => {
@@ -217,7 +328,6 @@
                         setConfig(parsed);
                         setJsonError(null);
                         
-                        // If current selected node disappeared, select the first available
                         if (!parsed.nodes[selectedNodeId]) {
                             const first = Object.keys(parsed.nodes)[0];
                             if (first) {
@@ -244,7 +354,6 @@
             const updateCommandKey = (oldKey, newKey) => {
                 if (oldKey === newKey) return;
                 const newCommands = {};
-                // Reconstruct object to maintain order (roughly)
                 Object.entries(config.commands).forEach(([k, v]) => {
                     if (k === oldKey) {
                         newCommands[newKey] = v;
@@ -366,16 +475,99 @@
             const previewNode = config.nodes[previewNodeId];
 
             return (
-                <div className="h-screen w-full bg-slate-100 text-slate-800 flex flex-col font-sans">
+                <div className="h-screen w-full bg-slate-100 text-slate-800 flex flex-col font-sans relative">
+                    
+                    {/* SETTINGS MODAL */}
+                    {showSettings && (
+                        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+                            <div className="bg-white rounded-xl shadow-2xl p-6 w-96 max-w-full">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="text-lg font-bold flex items-center gap-2">
+                                        <Settings size={20} className="text-slate-600" /> Settings
+                                    </h2>
+                                    <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600">
+                                        <X size={20} />
+                                    </button>
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Gemini API Key</label>
+                                    <input 
+                                        type="password" 
+                                        value={apiKey} 
+                                        onChange={(e) => saveApiKey(e.target.value)}
+                                        placeholder="AIzaSy..."
+                                        className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                    />
+                                    <p className="text-xs text-slate-500 mt-2">
+                                        Key is stored locally in your browser. <a href="https://aistudio.google.com/app/apikey" target="_blank" className="text-blue-600 hover:underline">Get key here</a>.
+                                    </p>
+                                </div>
+                                <div className="flex justify-end">
+                                    <button 
+                                        onClick={() => setShowSettings(false)}
+                                        className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700"
+                                    >
+                                        Done
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* AI GENERATOR MODAL */}
+                    {showAiModal && (
+                        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+                            <div className="bg-white rounded-xl shadow-2xl p-6 w-[500px] max-w-full">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="text-lg font-bold flex items-center gap-2 bg-gradient-to-r from-purple-500 to-blue-500 bg-clip-text text-transparent">
+                                        <Sparkles size={20} className="text-purple-500" /> Magic Screen Generator
+                                    </h2>
+                                    <button onClick={() => setShowAiModal(false)} className="text-slate-400 hover:text-slate-600">
+                                        <X size={20} />
+                                    </button>
+                                </div>
+                                <div className="mb-4">
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Describe the screen you want:</label>
+                                    <textarea 
+                                        value={aiPrompt} 
+                                        onChange={(e) => setAiPrompt(e.target.value)}
+                                        placeholder="E.g. A support page with links to email and twitter, and a back button."
+                                        rows={4}
+                                        className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none resize-none"
+                                    />
+                                </div>
+                                <div className="flex justify-end gap-2">
+                                    <button 
+                                        onClick={() => setShowAiModal(false)}
+                                        className="text-slate-500 px-4 py-2 rounded text-sm font-medium hover:bg-slate-100"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button 
+                                        onClick={handleGenerateNode}
+                                        disabled={isGeneratingNode || !aiPrompt.trim()}
+                                        className="bg-gradient-to-r from-purple-600 to-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+                                    >
+                                        {isGeneratingNode ? <><Loader2 size={16} className="animate-spin" /> Generating...</> : <><Sparkles size={16} /> Generate</>}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* HEADER */}
                     <header className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between shrink-0 z-10">
                         <div className="flex items-center gap-3">
                             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
                                 <Zap size={20} fill="currentColor" />
                             </div>
-                            <h1 className="font-bold text-lg text-slate-800 tracking-tight">Bot Builder <span className="text-xs font-normal text-slate-400 border border-slate-200 rounded px-2 py-0.5 ml-2">JSON Editor</span></h1>
+                            <h1 className="font-bold text-lg text-slate-800 tracking-tight">Bot Builder <span className="text-xs font-normal text-slate-400 border border-slate-200 rounded px-2 py-0.5 ml-2">AI Edition ✨</span></h1>
                         </div>
                         <div className="flex items-center gap-3">
+                            <button onClick={() => setShowSettings(true)} className={`p-2 rounded-full transition-colors ${!apiKey ? 'bg-red-100 text-red-500 animate-pulse-ring' : 'hover:bg-slate-100 text-slate-500'}`} title="Settings / API Key">
+                                <Settings size={20} />
+                            </button>
+                            <div className="h-6 w-px bg-slate-200 mx-1"></div>
                             <label className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-md border border-slate-200 cursor-pointer transition-colors">
                                 <Upload size={16} /> Import
                                 <input type="file" accept=".json" onChange={handleImport} className="hidden" />
@@ -434,9 +626,18 @@
                             <div className="flex-1 overflow-y-auto p-4">
                                 <div className="flex items-center justify-between mb-3">
                                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Nodes (Screens)</h3>
-                                    <button onClick={addNode} className="p-1 hover:bg-slate-100 rounded text-blue-600 transition-colors" title="Add Screen">
-                                        <Plus size={16} />
-                                    </button>
+                                    <div className="flex gap-1">
+                                        <button 
+                                            onClick={() => setShowAiModal(true)} 
+                                            className="p-1 hover:bg-purple-50 text-purple-600 rounded transition-colors" 
+                                            title="Magic Generate"
+                                        >
+                                            <Sparkles size={16} />
+                                        </button>
+                                        <button onClick={addNode} className="p-1 hover:bg-slate-100 rounded text-blue-600 transition-colors" title="Add Screen">
+                                            <Plus size={16} />
+                                        </button>
+                                    </div>
                                 </div>
                                 <div className="space-y-1">
                                     {Object.entries(config.nodes).map(([id, node]) => (
@@ -506,7 +707,17 @@
                                             </div>
                                         )}
                                         <div>
-                                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Message Text (HTML Supported)</label>
+                                            <div className="flex justify-between items-center mb-1">
+                                                <label className="block text-xs font-bold text-slate-500 uppercase">Message Text (HTML Supported)</label>
+                                                <button 
+                                                    onClick={handlePolishText} 
+                                                    disabled={isPolishing || !currentNode.text}
+                                                    className="text-xs flex items-center gap-1 text-purple-600 hover:text-purple-700 font-medium disabled:opacity-50"
+                                                >
+                                                    {isPolishing ? <Loader2 size={12} className="animate-spin"/> : <Wand2 size={12} />}
+                                                    Magic Polish
+                                                </button>
+                                            </div>
                                             <textarea value={currentNode.text} onChange={(e) => updateNode('text', e.target.value)} rows={6} className="w-full bg-white border border-slate-200 focus:border-blue-500 outline-none rounded px-3 py-2 text-sm font-sans" />
                                         </div>
                                         <div>
