@@ -24,13 +24,15 @@
         import { 
             Save, Upload, Download, Plus, Trash2, 
             Smartphone, Zap, Image as ImageIcon, MessageSquare,
-            ArrowRight, GripVertical, ExternalLink, RefreshCw, LayoutGrid, X
+            ArrowRight, GripVertical, ExternalLink, RefreshCw, LayoutGrid, X, AlertCircle
         } from 'https://esm.sh/lucide-react@0.263.1';
 
-        // --- EXTRACTED COMPONENT TO FIX FOCUS BUG ---
+        // --- EXTRACTED COMPONENT TO FIX FOCUS BUG & IMMUTABILITY ---
         const ButtonEditor = ({ buttons, nodeList, onChange }) => {
             const updateButton = (rowIndex, btnIndex, field, val) => {
-                const newButtons = [...buttons];
+                // Deep copy to prevent state mutation issues
+                const newButtons = buttons.map(row => [...row]);
+                
                 // Ensure the row exists
                 if (!newButtons[rowIndex]) newButtons[rowIndex] = [];
                 // Ensure the button object exists
@@ -51,18 +53,19 @@
             };
 
             const addButton = (rowIndex) => {
-                const newButtons = [...buttons];
+                const newButtons = buttons.map(row => [...row]);
                 newButtons[rowIndex].push({ label: "New Button", next: Object.keys(nodeList)[0] || "" });
                 onChange(newButtons);
             };
 
             const addRow = () => {
-                const newButtons = [...buttons, [{ label: "New Button", next: Object.keys(nodeList)[0] || "" }]];
+                const newButtons = buttons.map(row => [...row]);
+                newButtons.push([{ label: "New Button", next: Object.keys(nodeList)[0] || "" }]);
                 onChange(newButtons);
             };
 
             const removeButton = (rowIndex, btnIndex) => {
-                const newButtons = [...buttons];
+                const newButtons = buttons.map(row => [...row]);
                 newButtons[rowIndex].splice(btnIndex, 1);
                 if (newButtons[rowIndex].length === 0) {
                     newButtons.splice(rowIndex, 1);
@@ -71,7 +74,7 @@
             };
 
             const removeRow = (rowIndex) => {
-                const newButtons = [...buttons];
+                const newButtons = buttons.map(row => [...row]);
                 newButtons.splice(rowIndex, 1);
                 onChange(newButtons);
             }
@@ -124,6 +127,7 @@
                                                     onChange={(e) => updateButton(rIndex, bIndex, 'next', e.target.value)}
                                                     className="flex-1 text-xs border border-slate-200 rounded px-2 py-1"
                                                 >
+                                                    {!nodeList[btn.next] && <option value={btn.next || ""}>{btn.next} (Missing)</option>}
                                                     {Object.entries(nodeList).map(([id, n]) => (
                                                         <option key={id} value={id}>{n.name} ({id})</option>
                                                     ))}
@@ -192,6 +196,40 @@
             const [selectedNodeId, setSelectedNodeId] = useState("home_screen");
             const [previewNodeId, setPreviewNodeId] = useState("home_screen");
             const [activeTab, setActiveTab] = useState("editor");
+            const [jsonText, setJsonText] = useState(JSON.stringify(initialConfig, null, 2));
+            const [jsonError, setJsonError] = useState(null);
+
+            // Sync JSON text when config changes (only if not in JSON mode)
+            useEffect(() => {
+                if (activeTab !== 'json') {
+                    setJsonText(JSON.stringify(config, null, 2));
+                    setJsonError(null);
+                }
+            }, [config, activeTab]);
+
+            // --- JSON EDITOR ACTIONS ---
+            const handleJsonChange = (e) => {
+                const newVal = e.target.value;
+                setJsonText(newVal);
+                try {
+                    const parsed = JSON.parse(newVal);
+                    if (parsed.nodes && typeof parsed.nodes === 'object') {
+                        setConfig(parsed);
+                        setJsonError(null);
+                        
+                        // If current selected node disappeared, select the first available
+                        if (!parsed.nodes[selectedNodeId]) {
+                            const first = Object.keys(parsed.nodes)[0];
+                            if (first) {
+                                setSelectedNodeId(first);
+                                setPreviewNodeId(first);
+                            }
+                        }
+                    }
+                } catch (err) {
+                    setJsonError(err.message);
+                }
+            };
 
             // --- COMMAND ACTIONS ---
             const addCommand = () => {
@@ -240,6 +278,7 @@
                         const json = JSON.parse(event.target.result);
                         if (json.nodes) {
                             setConfig(json);
+                            setJsonText(JSON.stringify(json, null, 2));
                             const firstNode = Object.keys(json.nodes)[0];
                             if (firstNode) {
                                 setSelectedNodeId(firstNode);
@@ -380,8 +419,9 @@
                                                 <select 
                                                     value={target}
                                                     onChange={(e) => updateCommandTarget(cmd, e.target.value)}
-                                                    className="flex-1 text-xs bg-white border border-slate-200 rounded px-1 py-1"
+                                                    className={`flex-1 text-xs border rounded px-1 py-1 ${!config.nodes[target] ? 'border-red-300 bg-red-50 text-red-600' : 'bg-white border-slate-200'}`}
                                                 >
+                                                    {!config.nodes[target] && <option value={target}>{target} (Missing)</option>}
                                                     {Object.entries(config.nodes).map(([id, node]) => (
                                                         <option key={id} value={id}>{node.name}</option>
                                                     ))}
@@ -486,7 +526,19 @@
                                         </div>
                                     </div>
                                 ) : activeTab === 'json' ? (
-                                    <div className="p-4 h-full"><textarea className="w-full h-full font-mono text-xs bg-slate-900 text-green-400 p-4 rounded-lg outline-none resize-none" value={JSON.stringify(config, null, 2)} readOnly /></div>
+                                    <div className="p-4 h-full relative">
+                                        {jsonError && (
+                                            <div className="absolute top-2 right-6 bg-red-100 text-red-700 px-3 py-1 rounded text-xs flex items-center gap-2 border border-red-200 pointer-events-none">
+                                                <AlertCircle size={12} /> {jsonError}
+                                            </div>
+                                        )}
+                                        <textarea 
+                                            className={`w-full h-full font-mono text-xs bg-slate-900 text-green-400 p-4 rounded-lg outline-none resize-none border-2 ${jsonError ? 'border-red-500' : 'border-transparent'}`} 
+                                            value={jsonText}
+                                            onChange={handleJsonChange}
+                                            placeholder="Paste your JSON here..."
+                                        />
+                                    </div>
                                 ) : (
                                     <div className="flex flex-col items-center justify-center h-full text-slate-400"><p>Select a node to edit</p></div>
                                 )}
