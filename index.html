@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Bot Builder</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        /* Custom scrollbar for a cleaner look */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="bg-slate-100">
+    <div id="root"></div>
+
+    <!-- MAIN APP SCRIPT -->
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18.2.0';
+        import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
+        import { 
+            Save, Upload, Download, Plus, Trash2, 
+            Smartphone, Zap, Image as ImageIcon, MessageSquare,
+            ArrowRight, GripVertical, ExternalLink, RefreshCw, LayoutGrid 
+        } from 'https://esm.sh/lucide-react@0.263.1';
+
+        const ConfigBuilder = () => {
+            // --- INITIAL STATE ---
+            const initialConfig = {
+                commands: {
+                    start: "home_screen"
+                },
+                nodes: {
+                    home_screen: {
+                        name: "Home Screen",
+                        type: "image",
+                        media_url: "https://images.unsplash.com/photo-1614680376593-902f74cf0d41?auto=format&fit=crop&w=600&q=80",
+                        text: "<b>Welcome to the Bot Builder!</b>\n\nThis is a preview of your bot. Use the editor on the left to change this text, add buttons, or create new screens.",
+                        buttons: [
+                            [
+                                { label: "💎 See Pricing", next: "pricing" },
+                                { label: "🛠 Features", next: "features" }
+                            ],
+                            [
+                                { label: "🌐 Visit Website", url: "https://google.com" }
+                            ]
+                        ]
+                    },
+                    pricing: {
+                        name: "Pricing Page",
+                        type: "text",
+                        text: "Our plans are simple:\n\n• Free: $0/mo\n• Pro: $10/mo\n• Enterprise: Contact us",
+                        buttons: [
+                            [ { label: "🔙 Back Home", next: "home_screen" } ]
+                        ]
+                    },
+                    features: {
+                        name: "Features List",
+                        type: "text",
+                        text: "We offer:\n- ⚡ Fast Performance\n- 🔒 Secure Storage\n- 📈 Real-time Analytics",
+                        invoke: "get_server_stats",
+                        buttons: [
+                            [ { label: "🔄 Refresh Stats", next: "features" } ],
+                            [ { label: "🔙 Back", next: "home_screen" } ]
+                        ]
+                    }
+                }
+            };
+
+            const [config, setConfig] = useState(initialConfig);
+            const [selectedNodeId, setSelectedNodeId] = useState("home_screen");
+            const [previewNodeId, setPreviewNodeId] = useState("home_screen");
+            const [activeTab, setActiveTab] = useState("editor");
+
+            // --- ACTIONS ---
+            const handleImport = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const json = JSON.parse(event.target.result);
+                        if (json.nodes) {
+                            setConfig(json);
+                            const firstNode = Object.keys(json.nodes)[0];
+                            if (firstNode) {
+                                setSelectedNodeId(firstNode);
+                                setPreviewNodeId(firstNode);
+                            }
+                        } else {
+                            alert("Invalid JSON format: Missing 'nodes' object.");
+                        }
+                    } catch (err) {
+                        alert("Error parsing JSON file.");
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            const handleExport = () => {
+                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(config, null, 2));
+                const downloadAnchorNode = document.createElement('a');
+                downloadAnchorNode.setAttribute("href", dataStr);
+                downloadAnchorNode.setAttribute("download", "bot_config.json");
+                document.body.appendChild(downloadAnchorNode);
+                downloadAnchorNode.click();
+                downloadAnchorNode.remove();
+            };
+
+            const copyToClipboard = () => {
+                const text = `/update ${JSON.stringify(config)}`;
+                navigator.clipboard.writeText(text).then(() => {
+                    alert("Copied to clipboard! Paste this into your Telegram bot.");
+                });
+            };
+
+            const addNode = () => {
+                const id = `node_${Date.now()}`;
+                const newNode = {
+                    name: "New Screen",
+                    type: "text",
+                    text: "New screen content...",
+                    buttons: []
+                };
+                setConfig(prev => ({
+                    ...prev,
+                    nodes: { ...prev.nodes, [id]: newNode }
+                }));
+                setSelectedNodeId(id);
+                setPreviewNodeId(id);
+            };
+
+            const deleteNode = (id) => {
+                if (Object.keys(config.nodes).length <= 1) {
+                    alert("You must have at least one node.");
+                    return;
+                }
+                if (confirm("Are you sure you want to delete this node?")) {
+                    const newNodes = { ...config.nodes };
+                    delete newNodes[id];
+                    setConfig(prev => ({ ...prev, nodes: newNodes }));
+                    if (selectedNodeId === id) {
+                        const nextId = Object.keys(newNodes)[0];
+                        setSelectedNodeId(nextId);
+                        setPreviewNodeId(nextId);
+                    }
+                }
+            };
+
+            const updateNode = (field, value) => {
+                setConfig(prev => ({
+                    ...prev,
+                    nodes: {
+                        ...prev.nodes,
+                        [selectedNodeId]: {
+                            ...prev.nodes[selectedNodeId],
+                            [field]: value
+                        }
+                    }
+                }));
+            };
+
+            // --- BUTTON EDITOR COMPONENT ---
+            const ButtonEditor = () => {
+                const node = config.nodes[selectedNodeId];
+                if (!node) return null;
+                const buttons = node.buttons || [];
+
+                const updateButton = (rowIndex, btnIndex, field, val) => {
+                    const newButtons = [...buttons];
+                    newButtons[rowIndex][btnIndex] = { ...newButtons[rowIndex][btnIndex], [field]: val };
+                    if (field === 'type') {
+                        if (val === 'url') {
+                            delete newButtons[rowIndex][btnIndex].next;
+                            newButtons[rowIndex][btnIndex].url = "https://";
+                        } else {
+                            delete newButtons[rowIndex][btnIndex].url;
+                            newButtons[rowIndex][btnIndex].next = selectedNodeId;
+                        }
+                    }
+                    updateNode('buttons', newButtons);
+                };
+
+                const addButton = (rowIndex) => {
+                    const newButtons = [...buttons];
+                    newButtons[rowIndex].push({ label: "New Button", next: selectedNodeId });
+                    updateNode('buttons', newButtons);
+                };
+
+                const addRow = () => {
+                    const newButtons = [...buttons, [{ label: "New Button", next: selectedNodeId }]];
+                    updateNode('buttons', newButtons);
+                };
+
+                const removeButton = (rowIndex, btnIndex) => {
+                    const newButtons = [...buttons];
+                    newButtons[rowIndex].splice(btnIndex, 1);
+                    if (newButtons[rowIndex].length === 0) {
+                        newButtons.splice(rowIndex, 1);
+                    }
+                    updateNode('buttons', newButtons);
+                };
+
+                return (
+                    <div className="space-y-4">
+                        {buttons.map((row, rIndex) => (
+                            <div key={rIndex} className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                                <div className="text-xs font-bold text-slate-400 mb-2 uppercase tracking-wider flex justify-between items-center">
+                                    Row {rIndex + 1}
+                                    <button onClick={() => {
+                                        const newButtons = [...buttons];
+                                        newButtons.splice(rIndex, 1);
+                                        updateNode('buttons', newButtons);
+                                    }} className="text-red-400 hover:text-red-600">
+                                        <Trash2 size={12} />
+                                    </button>
+                                </div>
+                                <div className="space-y-3">
+                                    {row.map((btn, bIndex) => (
+                                        <div key={bIndex} className="flex flex-col gap-2 bg-white p-3 rounded border border-slate-200 shadow-sm">
+                                            <div className="flex items-center gap-2">
+                                                <input 
+                                                    type="text" 
+                                                    value={btn.label} 
+                                                    onChange={(e) => updateButton(rIndex, bIndex, 'label', e.target.value)}
+                                                    className="flex-1 text-sm border-slate-200 rounded px-2 py-1"
+                                                    placeholder="Button Label"
+                                                />
+                                                <button onClick={() => removeButton(rIndex, bIndex)} className="text-slate-400 hover:text-red-500">
+                                                    <Trash2 size={14} />
+                                                </button>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <select 
+                                                    className="text-xs border border-slate-200 rounded px-2 py-1 bg-slate-50"
+                                                    value={btn.url ? 'url' : 'next'}
+                                                    onChange={(e) => updateButton(rIndex, bIndex, 'type', e.target.value)}
+                                                >
+                                                    <option value="next">Go to Node</option>
+                                                    <option value="url">Open URL</option>
+                                                </select>
+                                                {btn.url !== undefined ? (
+                                                    <input 
+                                                        type="text" 
+                                                        value={btn.url}
+                                                        onChange={(e) => updateButton(rIndex, bIndex, 'url', e.target.value)}
+                                                        className="flex-1 text-xs border-slate-200 rounded px-2 py-1"
+                                                        placeholder="https://..."
+                                                    />
+                                                ) : (
+                                                    <select 
+                                                        value={btn.next || ""} 
+                                                        onChange={(e) => updateButton(rIndex, bIndex, 'next', e.target.value)}
+                                                        className="flex-1 text-xs border-slate-200 rounded px-2 py-1"
+                                                    >
+                                                        {Object.entries(config.nodes).map(([id, n]) => (
+                                                            <option key={id} value={id}>{n.name} ({id})</option>
+                                                        ))}
+                                                    </select>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    <button onClick={() => addButton(rIndex)} className="w-full py-1 text-xs text-blue-500 font-medium hover:bg-blue-50 rounded border border-dashed border-blue-200">
+                                        + Add Button to Row
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                        <button onClick={addRow} className="w-full py-2 text-sm text-slate-500 font-medium hover:bg-slate-100 rounded border border-dashed border-slate-300 flex items-center justify-center gap-2">
+                            <Plus size={16} /> Add New Row
+                        </button>
+                    </div>
+                );
+            };
+
+            // --- MAIN RENDER ---
+            const currentNode = config.nodes[selectedNodeId];
+            const previewNode = config.nodes[previewNodeId];
+
+            return (
+                <div className="h-screen w-full bg-slate-100 text-slate-800 flex flex-col font-sans">
+                    {/* HEADER */}
+                    <header className="h-16 bg-white border-b border-slate-200 px-6 flex items-center justify-between shrink-0 z-10">
+                        <div className="flex items-center gap-3">
+                            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
+                                <Zap size={20} fill="currentColor" />
+                            </div>
+                            <h1 className="font-bold text-lg text-slate-800 tracking-tight">Bot Builder <span className="text-xs font-normal text-slate-400 border border-slate-200 rounded px-2 py-0.5 ml-2">JSON Editor</span></h1>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <label className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-md border border-slate-200 cursor-pointer transition-colors">
+                                <Upload size={16} /> Import JSON
+                                <input type="file" accept=".json" onChange={handleImport} className="hidden" />
+                            </label>
+                            <button onClick={handleExport} className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-md border border-slate-200 transition-colors">
+                                <Download size={16} /> Export JSON
+                            </button>
+                            <button onClick={copyToClipboard} className="flex items-center gap-2 px-4 py-1.5 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-md shadow-sm transition-colors">
+                                <Save size={16} /> Copy for Bot
+                            </button>
+                        </div>
+                    </header>
+
+                    <div className="flex-1 flex overflow-hidden">
+                        {/* LEFT SIDEBAR: LISTS */}
+                        <aside className="w-64 bg-white border-r border-slate-200 flex flex-col shrink-0">
+                            <div className="p-4 border-b border-slate-100">
+                                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Commands</h3>
+                                <div className="space-y-2">
+                                    {Object.entries(config.commands).map(([cmd, target]) => (
+                                        <div key={cmd} className="flex items-center justify-between bg-slate-50 p-2 rounded text-sm border border-slate-100">
+                                            <span className="font-mono text-blue-600">/{cmd}</span>
+                                            <ArrowRight size={12} className="text-slate-300" />
+                                            <span className="text-xs text-slate-500 truncate max-w-[80px]">{config.nodes[target]?.name || target}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-4">
+                                <div className="flex items-center justify-between mb-3">
+                                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Nodes (Screens)</h3>
+                                    <button onClick={addNode} className="p-1 hover:bg-slate-100 rounded text-blue-600 transition-colors">
+                                        <Plus size={16} />
+                                    </button>
+                                </div>
+                                <div className="space-y-1">
+                                    {Object.entries(config.nodes).map(([id, node]) => (
+                                        <button
+                                            key={id}
+                                            onClick={() => { setSelectedNodeId(id); setPreviewNodeId(id); setActiveTab('editor'); }}
+                                            className={`w-full text-left px-3 py-2 rounded-md text-sm flex items-center justify-between group transition-colors ${selectedNodeId === id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-slate-600 hover:bg-slate-50'}`}
+                                        >
+                                            <div className="flex items-center gap-2 truncate">
+                                                {node.type === 'image' ? <ImageIcon size={14} className="opacity-50" /> : <MessageSquare size={14} className="opacity-50" />}
+                                                <span className="truncate">{node.name}</span>
+                                            </div>
+                                            {selectedNodeId === id && (
+                                                <div onClick={(e) => { e.stopPropagation(); deleteNode(id); }} className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-500 transition-opacity">
+                                                    <Trash2 size={12} />
+                                                </div>
+                                            )}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </aside>
+
+                        {/* CENTER: EDITOR */}
+                        <main className="flex-1 flex flex-col min-w-0 bg-white">
+                            <div className="flex border-b border-slate-200">
+                                <button onClick={() => setActiveTab('editor')} className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'editor' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>Visual Editor</button>
+                                <button onClick={() => setActiveTab('json')} className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'json' ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>Raw JSON</button>
+                            </div>
+                            <div className="flex-1 overflow-y-auto">
+                                {activeTab === 'editor' && currentNode ? (
+                                    <div className="p-8 max-w-3xl mx-auto space-y-8">
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Internal ID (Auto)</label>
+                                                <input type="text" value={selectedNodeId} disabled className="w-full bg-slate-50 border border-slate-200 rounded px-3 py-2 text-sm text-slate-500 font-mono" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Screen Name (Admin Only)</label>
+                                                <input type="text" value={currentNode.name} onChange={(e) => updateNode('name', e.target.value)} className="w-full bg-white border border-slate-200 focus:border-blue-500 outline-none rounded px-3 py-2 text-sm" />
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Message Type</label>
+                                            <div className="flex gap-4">
+                                                <label className={`flex items-center gap-2 p-3 rounded border cursor-pointer transition-colors flex-1 ${currentNode.type === 'text' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-slate-200 hover:bg-slate-50'}`}>
+                                                    <input type="radio" name="type" checked={currentNode.type === 'text'} onChange={() => updateNode('type', 'text')} className="text-blue-600 focus:ring-blue-500" />
+                                                    <MessageSquare size={16} /> <span className="text-sm font-medium">Text Only</span>
+                                                </label>
+                                                <label className={`flex items-center gap-2 p-3 rounded border cursor-pointer transition-colors flex-1 ${currentNode.type === 'image' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-slate-200 hover:bg-slate-50'}`}>
+                                                    <input type="radio" name="type" checked={currentNode.type === 'image'} onChange={() => updateNode('type', 'image')} className="text-blue-600 focus:ring-blue-500" />
+                                                    <ImageIcon size={16} /> <span className="text-sm font-medium">Image + Text</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                        {currentNode.type === 'image' && (
+                                            <div>
+                                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Image URL</label>
+                                                <div className="flex gap-2">
+                                                    <input type="text" value={currentNode.media_url || ""} onChange={(e) => updateNode('media_url', e.target.value)} placeholder="https://example.com/image.jpg" className="flex-1 bg-white border border-slate-200 focus:border-blue-500 outline-none rounded px-3 py-2 text-sm" />
+                                                    {currentNode.media_url && (
+                                                        <div className="w-10 h-10 rounded border border-slate-200 bg-slate-50 shrink-0 overflow-hidden">
+                                                            <img src={currentNode.media_url} className="w-full h-full object-cover" alt="Preview" />
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Message Text (HTML Supported)</label>
+                                            <textarea value={currentNode.text} onChange={(e) => updateNode('text', e.target.value)} rows={6} className="w-full bg-white border border-slate-200 focus:border-blue-500 outline-none rounded px-3 py-2 text-sm font-sans" />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Invoke Worker Function (Optional)</label>
+                                            <div className="flex items-center gap-2">
+                                                <RefreshCw size={14} className="text-slate-400" />
+                                                <input type="text" value={currentNode.invoke || ""} onChange={(e) => updateNode('invoke', e.target.value)} placeholder="e.g. get_user_balance" className="flex-1 bg-white border border-slate-200 focus:border-blue-500 outline-none rounded px-3 py-2 text-sm font-mono" />
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-500 uppercase mb-3 flex items-center gap-2"><LayoutGrid size={14} /> Buttons & Actions</label>
+                                            <ButtonEditor />
+                                        </div>
+                                    </div>
+                                ) : activeTab === 'json' ? (
+                                    <div className="p-4 h-full"><textarea className="w-full h-full font-mono text-xs bg-slate-900 text-green-400 p-4 rounded-lg outline-none resize-none" value={JSON.stringify(config, null, 2)} readOnly /></div>
+                                ) : (
+                                    <div className="flex flex-col items-center justify-center h-full text-slate-400"><p>Select a node to edit</p></div>
+                                )}
+                            </div>
+                        </main>
+
+                        {/* RIGHT SIDEBAR: PREVIEW */}
+                        <aside className="w-[400px] bg-slate-100 border-l border-slate-200 p-8 flex flex-col items-center justify-center shrink-0">
+                            <div className="mb-4 flex items-center gap-2 text-slate-500 text-sm font-medium"><Smartphone size={16} /> Live Preview</div>
+                            <div className="w-[320px] h-[640px] bg-white rounded-[40px] border-[8px] border-slate-800 shadow-2xl overflow-hidden relative flex flex-col">
+                                <div className="h-6 bg-slate-800 w-full flex items-center justify-between px-6"><span className="text-[10px] text-white font-medium">9:41</span><div className="flex gap-1"><div className="w-2 h-2 rounded-full bg-white"></div><div className="w-2 h-2 rounded-full bg-white"></div></div></div>
+                                <div className="h-12 bg-[#517DA2] flex items-center px-4 shrink-0 shadow-sm z-10">
+                                    <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-white font-bold text-xs mr-3">B</div>
+                                    <div className="flex flex-col text-white"><span className="text-sm font-bold leading-tight">My Bot</span><span className="text-[10px] opacity-80 leading-tight">bot</span></div>
+                                </div>
+                                <div className="flex-1 bg-[#85A6C4] p-4 overflow-y-auto bg-cover bg-center bg-no-repeat" style={{ backgroundImage: 'url("https://web.telegram.org/img/bg_0.png")' }}>
+                                    {previewNode && (
+                                        <div className="flex flex-col gap-1 items-start max-w-[85%] animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                            <div className="bg-white rounded-lg rounded-tl-none shadow-sm overflow-hidden p-0 text-sm text-slate-800 relative group">
+                                                {previewNode.type === 'image' && previewNode.media_url && (<div className="w-full aspect-video bg-slate-100"><img src={previewNode.media_url} className="w-full h-full object-cover" alt="Node Media" /></div>)}
+                                                <div className="p-3 whitespace-pre-wrap leading-snug min-w-[120px]" dangerouslySetInnerHTML={{ __html: previewNode.text }} />
+                                                <div className="px-3 pb-1 text-[10px] text-slate-400 text-right">9:42 AM</div>
+                                            </div>
+                                            {previewNode.buttons && previewNode.buttons.length > 0 && (
+                                                <div className="w-full mt-1 space-y-1">
+                                                    {previewNode.buttons.map((row, rIdx) => (
+                                                        <div key={rIdx} className="flex gap-1">
+                                                            {row.map((btn, bIdx) => (
+                                                                <button key={bIdx} onClick={() => {
+                                                                    if (btn.url) { window.open(btn.url, '_blank'); } 
+                                                                    else if (btn.next && config.nodes[btn.next]) { setPreviewNodeId(btn.next); setSelectedNodeId(btn.next); }
+                                                                }} className="flex-1 bg-[#5C88AA]/90 hover:bg-[#5C88AA] text-white text-xs font-semibold py-2.5 px-2 rounded backdrop-blur-sm shadow-sm active:scale-95 transition-all flex items-center justify-center gap-1">
+                                                                    {btn.label} {btn.url && <ExternalLink size={10} className="opacity-70" />}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="h-12 bg-white border-t border-slate-200 flex items-center px-3 gap-3 shrink-0">
+                                    <div className="w-6 h-6 rounded-full border-2 border-slate-300"></div><div className="h-8 flex-1 bg-slate-100 rounded-full"></div>
+                                </div>
+                            </div>
+                            <div className="mt-6 text-center">
+                                <p className="text-xs text-slate-400 max-w-[200px]">Click buttons in the phone preview to test your flow navigation.</p>
+                                {previewNodeId !== "home_screen" && (<button onClick={() => { setPreviewNodeId("home_screen"); setSelectedNodeId("home_screen"); }} className="mt-3 text-xs text-blue-500 hover:underline">Reset Preview to Start</button>)}
+                            </div>
+                        </aside>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<ConfigBuilder />);
+    </script>
+</body>
+</html>
