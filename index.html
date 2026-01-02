@@ -83,14 +83,22 @@
                     if (val === 'url') {
                         delete btn.next;
                         delete btn.invoke;
+                        delete btn.file_ids;
                         btn.url = "https://";
                     } else if (val === 'invoke') {
                         delete btn.url;
-                        delete btn.next; // Ensure 'next' is removed for invoke buttons
+                        delete btn.next;
+                        delete btn.file_ids;
                         btn.invoke = "my_function";
+                    } else if (val === 'file') {
+                        delete btn.url;
+                        delete btn.next;
+                        delete btn.invoke;
+                        btn.file_ids = "";
                     } else {
                         delete btn.url;
                         delete btn.invoke;
+                        delete btn.file_ids;
                         // Ensure 'next' exists for standard navigation
                         if (!btn.next) btn.next = currentNodeId || Object.keys(nodeList)[0] || "";
                     }
@@ -160,12 +168,13 @@
                                         <div className="flex gap-2">
                                             <select 
                                                 className="text-xs border border-slate-200 rounded px-2 py-1 bg-slate-50"
-                                                value={btn.url !== undefined ? 'url' : (btn.invoke !== undefined ? 'invoke' : 'next')}
+                                                value={btn.url !== undefined ? 'url' : (btn.invoke !== undefined ? 'invoke' : (btn.file_ids !== undefined ? 'file' : 'next'))}
                                                 onChange={(e) => updateButton(rIndex, bIndex, 'type', e.target.value)}
                                             >
                                                 <option value="next">Go to Node</option>
                                                 <option value="url">Open URL</option>
                                                 <option value="invoke">Invoke Function</option>
+                                                <option value="file">Send Files</option>
                                             </select>
                                             
                                             {btn.url !== undefined ? (
@@ -184,6 +193,15 @@
                                                     className="flex-1 text-xs border border-slate-200 rounded px-2 py-1 font-mono text-purple-600"
                                                     placeholder="func_name"
                                                     title="Function to invoke"
+                                                />
+                                            ) : btn.file_ids !== undefined ? (
+                                                <input 
+                                                    type="text" 
+                                                    value={btn.file_ids}
+                                                    onChange={(e) => updateButton(rIndex, bIndex, 'file_ids', e.target.value)}
+                                                    className="flex-1 text-xs border border-slate-200 rounded px-2 py-1 font-mono text-orange-600"
+                                                    placeholder="file_123_abc,file_456_def"
+                                                    title="Comma-separated file IDs"
                                                 />
                                             ) : (
                                                 <select 
@@ -809,11 +827,13 @@
                                                                 <button key={bIdx} onClick={() => {
                                                                     if (btn.url) { window.open(btn.url, '_blank'); }
                                                                     else if (btn.invoke) { alert(`[Preview] Function invoked: ${btn.invoke}`); }
+                                                                    else if (btn.file_ids) { alert(`[Preview] Would send files: ${btn.file_ids}`); }
                                                                     else if (btn.next && config.nodes[btn.next]) { setPreviewNodeId(btn.next); setSelectedNodeId(btn.next); }
                                                                 }} className="flex-1 bg-[#5C88AA]/90 hover:bg-[#5C88AA] text-white text-xs font-semibold py-2.5 px-2 rounded backdrop-blur-sm shadow-sm active:scale-95 transition-all flex items-center justify-center gap-1">
                                                                     {btn.label} 
                                                                     {btn.url && <ExternalLink size={10} className="opacity-70" />}
                                                                     {btn.invoke && <Terminal size={10} className="opacity-70" />}
+                                                                    {btn.file_ids && <Download size={10} className="opacity-70" />}
                                                                 </button>
                                                             ))}
                                                         </div>
