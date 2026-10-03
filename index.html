@@ -62,11 +62,236 @@
                 }
 
                 const data = await response.json();
-                return JSON.parse(data.candidates[0].content.parts[0].text);
+                
+                const candidate = data.candidates?.[0];
+                if (!candidate) throw new Error("No candidate returned from Gemini API");
+
+                const parts = candidate.content?.parts || [];
+                const textPart = parts.find(p => p.text && !p.thought) || parts.find(p => p.text) || parts[0];
+                let text = textPart?.text || "";
+
+                text = text.trim();
+                if (text.startsWith("```")) {
+                    text = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+                }
+
+                let parsed = JSON.parse(text);
+                if (parsed && parsed.candidates && Array.isArray(parsed.candidates)) {
+                    const innerPart = parsed.candidates[0]?.content?.parts?.find(p => p.text && !p.thought) || parsed.candidates[0]?.content?.parts?.[0];
+                    if (innerPart?.text) {
+                        let innerText = innerPart.text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+                        parsed = JSON.parse(innerText);
+                    }
+                }
+                return parsed;
             } catch (error) {
                 console.error("Gemini API Error:", error);
                 throw error;
             }
+        };
+
+        // --- ADAPTER / NORMALIZER FOR NODES & MULTI-SCREEN FLOWS ---
+        const sanitizeNode = (item) => {
+            if (!item || typeof item !== 'object') {
+                return {
+                    name: "Untitled Screen",
+                    type: "text",
+                    text: "",
+                    buttons: []
+                };
+            }
+            return {
+                name: item.name || "Untitled Screen",
+                type: item.type === "image" ? "image" : "text",
+                text: typeof item.text === "string" ? item.text : (item.text ? String(item.text) : ""),
+                media_url: item.media_url || "",
+                buttons: Array.isArray(item.buttons) ? item.buttons.map(row => 
+                    Array.isArray(row) ? row.map(btn => ({
+                        label: btn.label || "Button",
+                        ...(btn.next !== undefined ? { next: btn.next } : {}),
+                        ...(btn.url !== undefined ? { url: btn.url } : {}),
+                        ...(btn.invoke !== undefined ? { invoke: btn.invoke } : {}),
+                        ...(btn.file_ids !== undefined ? { file_ids: btn.file_ids } : {})
+                    })) : []
+                ) : [],
+                ...(item.invoke ? { invoke: item.invoke } : {})
+            };
+        };
+
+        const processNodesArray = (arr, existingNodes = {}) => {
+            const referencedTargets = new Set();
+            arr.forEach(item => {
+                if (item && Array.isArray(item.buttons)) {
+                    item.buttons.flat().forEach(btn => {
+                        if (btn && btn.next) referencedTargets.add(btn.next);
+                    });
+                }
+            });
+
+            const unassignedTargets = Array.from(referencedTargets).filter(t => !existingNodes[t]);
+            const assignedIds = new Set(Object.keys(existingNodes));
+
+            const getMatchScore = (target, name) => {
+                const t = target.toLowerCase().replace(/[^a-z0-9]/g, '');
+                const n = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (t === n) return 100;
+                if (n.startsWith(t) || t.startsWith(n)) return 80;
+                if (n.includes(t) || t.includes(n)) return 60;
+                const tTokens = target.toLowerCase().split(/[^a-z0-9]+/);
+                const nTokens = name.toLowerCase().split(/[^a-z0-9]+/);
+                let common = 0;
+                for (const token of tTokens) {
+                    if (token.length > 1 && nTokens.some(nt => nt.startsWith(token) || token.startsWith(nt))) {
+                        common++;
+                    }
+                }
+                return common * 25;
+            };
+
+            const resultNodes = {};
+            const usedTargets = new Set();
+            const pendingNodes = [];
+
+            arr.forEach((item, index) => {
+                if (item && item.id && typeof item.id === 'string') {
+                    resultNodes[item.id] = sanitizeNode(item);
+                    assignedIds.add(item.id);
+                    usedTargets.add(item.id);
+                } else if (item && typeof item === 'object') {
+                    pendingNodes.push({ item, index });
+                }
+            });
+
+            pendingNodes.forEach(({ item, index }) => {
+                const name = item.name || `Screen_${index + 1}`;
+                let bestTarget = null;
+                let bestScore = 0;
+
+                for (const target of unassignedTargets) {
+                    if (!usedTargets.has(target)) {
+                        const score = getMatchScore(target, name);
+                        if (score > bestScore && score >= 20) {
+                            bestScore = score;
+                            bestTarget = target;
+                        }
+                    }
+                }
+
+                let chosenId;
+                if (bestTarget) {
+                    chosenId = bestTarget;
+                    usedTargets.add(bestTarget);
+                } else {
+                    let slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+                    if (!slug) slug = `node_${Date.now()}_${index}`;
+                    chosenId = slug;
+                    let counter = 2;
+                    while (assignedIds.has(chosenId)) {
+                        chosenId = `${slug}_${counter++}`;
+                    }
+                }
+
+                assignedIds.add(chosenId);
+                resultNodes[chosenId] = sanitizeNode(item);
+            });
+
+            return resultNodes;
+        };
+
+        const processNodesResponse = (data, existingNodes = {}) => {
+            if (!data) return {};
+
+            if (data.candidates && Array.isArray(data.candidates)) {
+                const textPart = data.candidates[0]?.content?.parts?.find(p => p.text && !p.thought) || data.candidates[0]?.content?.parts?.[0];
+                if (textPart?.text) {
+                    try {
+                        const unquoted = textPart.text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+                        data = JSON.parse(unquoted);
+                    } catch (e) {}
+                }
+            }
+
+            if (Array.isArray(data)) {
+                return processNodesArray(data, existingNodes);
+            }
+
+            if (data.nodes) {
+                if (Array.isArray(data.nodes)) {
+                    return processNodesArray(data.nodes, existingNodes);
+                } else if (typeof data.nodes === 'object') {
+                    const res = {};
+                    Object.entries(data.nodes).forEach(([k, v]) => {
+                        res[k] = sanitizeNode(v);
+                    });
+                    return res;
+                }
+            }
+
+            if (data.screens) {
+                if (Array.isArray(data.screens)) {
+                    return processNodesArray(data.screens, existingNodes);
+                } else if (typeof data.screens === 'object') {
+                    const res = {};
+                    Object.entries(data.screens).forEach(([k, v]) => {
+                        res[k] = sanitizeNode(v);
+                    });
+                    return res;
+                }
+            }
+
+            if (data.name || data.text || data.buttons) {
+                let id = data.id;
+                if (!id) {
+                    const slug = (data.name || "new_screen").toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+                    id = slug || `node_${Date.now()}`;
+                    let counter = 2;
+                    while (existingNodes[id]) {
+                        id = `${slug}_${counter++}`;
+                    }
+                }
+                return { [id]: sanitizeNode(data) };
+            }
+
+            return {};
+        };
+
+        const adaptAnyJsonToConfig = (raw, fallbackConfig) => {
+            if (!raw) return null;
+
+            if (raw.candidates && Array.isArray(raw.candidates)) {
+                const textPart = raw.candidates[0]?.content?.parts?.find(p => p.text && !p.thought) || raw.candidates[0]?.content?.parts?.[0];
+                if (textPart?.text) {
+                    try {
+                        raw = JSON.parse(textPart.text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim());
+                    } catch (e) {}
+                }
+            }
+
+            if (raw.nodes && typeof raw.nodes === 'object' && !Array.isArray(raw.nodes)) {
+                return {
+                    commands: raw.commands && typeof raw.commands === 'object' ? raw.commands : { start: Object.keys(raw.nodes)[0] || "home_screen" },
+                    nodes: raw.nodes
+                };
+            }
+
+            const newNodes = processNodesResponse(raw, fallbackConfig?.nodes || {});
+            if (Object.keys(newNodes).length > 0) {
+                const firstId = Object.keys(newNodes)[0];
+                const commands = (fallbackConfig && fallbackConfig.commands && Object.keys(fallbackConfig.commands).length > 0)
+                    ? { ...fallbackConfig.commands }
+                    : { start: firstId };
+                if (!commands.start) commands.start = firstId;
+
+                return {
+                    commands: commands,
+                    nodes: {
+                        ...(fallbackConfig?.nodes || {}),
+                        ...newNodes
+                    }
+                };
+            }
+
+            return null;
         };
 
         // --- EXTRACTED COMPONENT TO FIX FOCUS BUG & IMMUTABILITY ---
@@ -303,34 +528,68 @@
             };
 
             const handleGenerateNode = async () => {
-                if (!apiKey) { setShowSettings(true); return; }
                 if (!aiPrompt.trim()) return;
+
+                // Check if user directly pasted JSON (e.g. Gemini raw response, array, or object)
+                const trimmed = aiPrompt.trim();
+                if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                    try {
+                        const parsed = JSON.parse(trimmed);
+                        const newNodes = processNodesResponse(parsed, config.nodes);
+                        const newIds = Object.keys(newNodes);
+                        if (newIds.length > 0) {
+                            setConfig(prev => ({
+                                ...prev,
+                                nodes: { ...prev.nodes, ...newNodes }
+                            }));
+                            setSelectedNodeId(newIds[0]);
+                            setPreviewNodeId(newIds[0]);
+                            setShowAiModal(false);
+                            setAiPrompt("");
+                            return;
+                        }
+                    } catch (e) {
+                        // Not raw JSON, proceed to API call
+                    }
+                }
+
+                if (!apiKey) { setShowSettings(true); return; }
 
                 setIsGeneratingNode(true);
                 try {
-                    const systemPrompt = `You are a helper for a Telegram Bot Builder. 
-                    Create a JSON object representing a SINGLE bot node based on the user's description.
-                    The JSON must adhere to this schema:
+                    const systemPrompt = `You are a Telegram Bot Builder AI assistant.
+                    Generate one or more bot screens based on the user's description.
+                    You can return EITHER a single node JSON object OR an array of node JSON objects if multiple screens are requested or needed for a flow.
+                    
+                    Each node schema:
                     {
-                        "name": "string (internal descriptive name)",
+                        "id": "string (unique identifier, e.g. 'home_screen', 'skeet_update_en')",
+                        "name": "string (human readable title)",
                         "type": "text" OR "image",
-                        "text": "string (HTML allowed, use <b>, <i>, emojis)",
-                        "media_url": "string (optional, valid image URL if type is image)",
-                        "buttons": [[{"label": "string", "next": "string (target node ID placeholder)"}]]
+                        "text": "string (HTML formatted with <b>, <i>, emojis)",
+                        "media_url": "string (optional valid image URL if type is image)",
+                        "buttons": [[{"label": "string", "next": "string (target node id)"}]]
                     }
-                    For 'next' in buttons, use 'home_screen' or 'placeholder' if unsure.
-                    If the user asks for a button that runs a function, use "invoke": "func_name" instead of "next" for that button.
-                    Return ONLY the JSON object.`;
+                    For button navigation, ensure 'next' matches the 'id' of another screen.
+                    If a button triggers a function, use "invoke": "func_name" instead of "next".
+                    If a button opens a link, use "url": "https://...".
+                    If a button sends files, use "file_ids": "file_id_1,file_id_2".
+                    Return ONLY valid JSON (object or array).`;
 
                     const nodeData = await generateContent(apiKey, aiPrompt, systemPrompt);
-                    
-                    const id = `node_${Date.now()}`;
+                    const newNodes = processNodesResponse(nodeData, config.nodes);
+                    const newIds = Object.keys(newNodes);
+
+                    if (newIds.length === 0) {
+                        throw new Error("Could not parse any valid screens from the response.");
+                    }
+
                     setConfig(prev => ({
                         ...prev,
-                        nodes: { ...prev.nodes, [id]: nodeData }
+                        nodes: { ...prev.nodes, ...newNodes }
                     }));
-                    setSelectedNodeId(id);
-                    setPreviewNodeId(id);
+                    setSelectedNodeId(newIds[0]);
+                    setPreviewNodeId(newIds[0]);
                     setShowAiModal(false);
                     setAiPrompt("");
                 } catch (error) {
@@ -354,7 +613,10 @@
                     Return JSON: { "text": "your polished text here" }`;
 
                     const result = await generateContent(apiKey, currentNode.text, systemPrompt);
-                    updateNode('text', result.text);
+                    const polishedText = (result && typeof result === 'object' && result.text) 
+                        ? result.text 
+                        : (typeof result === 'string' ? result : currentNode.text);
+                    updateNode('text', polishedText);
                 } catch (error) {
                     alert("AI Polish Failed: " + error.message);
                 } finally {
@@ -368,17 +630,20 @@
                 setJsonText(newVal);
                 try {
                     const parsed = JSON.parse(newVal);
-                    if (parsed.nodes && typeof parsed.nodes === 'object') {
-                        setConfig(parsed);
+                    const adapted = adaptAnyJsonToConfig(parsed, config);
+                    if (adapted && adapted.nodes && Object.keys(adapted.nodes).length > 0) {
+                        setConfig(adapted);
                         setJsonError(null);
                         
-                        if (!parsed.nodes[selectedNodeId]) {
-                            const first = Object.keys(parsed.nodes)[0];
+                        if (!adapted.nodes[selectedNodeId]) {
+                            const first = Object.keys(adapted.nodes)[0];
                             if (first) {
                                 setSelectedNodeId(first);
                                 setPreviewNodeId(first);
                             }
                         }
+                    } else {
+                        setJsonError("JSON must contain valid 'nodes' or screen objects.");
                     }
                 } catch (err) {
                     setJsonError(err.message);
@@ -429,19 +694,20 @@
                 reader.onload = (event) => {
                     try {
                         const json = JSON.parse(event.target.result);
-                        if (json.nodes) {
-                            setConfig(json);
-                            setJsonText(JSON.stringify(json, null, 2));
-                            const firstNode = Object.keys(json.nodes)[0];
+                        const adapted = adaptAnyJsonToConfig(json, config);
+                        if (adapted && adapted.nodes && Object.keys(adapted.nodes).length > 0) {
+                            setConfig(adapted);
+                            setJsonText(JSON.stringify(adapted, null, 2));
+                            const firstNode = Object.keys(adapted.nodes)[0];
                             if (firstNode) {
                                 setSelectedNodeId(firstNode);
                                 setPreviewNodeId(firstNode);
                             }
                         } else {
-                            alert("Invalid JSON format: Missing 'nodes' object.");
+                            alert("Invalid format: Could not extract bot screens/nodes from this JSON.");
                         }
                     } catch (err) {
-                        alert("Error parsing JSON file.");
+                        alert("Error parsing JSON file: " + err.message);
                     }
                 };
                 reader.readAsText(file);
@@ -571,18 +837,18 @@
                                     </button>
                                 </div>
                                 <div className="mb-4">
-                                    <label className="block text-sm font-medium text-slate-700 mb-1">Describe the screen you want:</label>
+                                    <label className="block text-sm font-medium text-slate-700 mb-1">Describe screens or paste AI JSON response:</label>
                                     <textarea 
                                         value={aiPrompt} 
                                         onChange={(e) => setAiPrompt(e.target.value)}
-                                        placeholder="E.g. A support page with links to email and twitter, and a button to check server status."
+                                        placeholder="Describe single/multi-screen flow (e.g. Language selection screen with English, Russian, Chinese update screens) or paste raw Gemini JSON..."
                                         rows={4}
-                                        className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none resize-none"
+                                        className="w-full border border-slate-300 rounded px-3 py-2 text-sm focus:ring-2 focus:ring-purple-500 outline-none resize-none font-mono text-xs"
                                     />
                                 </div>
                                 <div className="flex justify-end gap-2">
                                     <button 
-                                        onClick={() => setShowAiModal(false)}
+                                        onClick={() => setShowAiModal(false)} 
                                         className="text-slate-500 px-4 py-2 rounded text-sm font-medium hover:bg-slate-100"
                                     >
                                         Cancel
@@ -592,7 +858,13 @@
                                         disabled={isGeneratingNode || !aiPrompt.trim()}
                                         className="bg-gradient-to-r from-purple-600 to-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
                                     >
-                                        {isGeneratingNode ? <><Loader2 size={16} className="animate-spin" /> Generating...</> : <><Sparkles size={16} /> Generate</>}
+                                        {isGeneratingNode ? (
+                                            <><Loader2 size={16} className="animate-spin" /> Generating...</>
+                                        ) : (aiPrompt.trim().startsWith('{') || aiPrompt.trim().startsWith('[')) ? (
+                                            <><Sparkles size={16} /> Import / Apply JSON</>
+                                        ) : (
+                                            <><Sparkles size={16} /> Generate</>
+                                        )}
                                     </button>
                                 </div>
                             </div>
